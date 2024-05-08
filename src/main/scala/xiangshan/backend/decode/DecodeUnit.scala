@@ -177,7 +177,7 @@ object XDecode extends DecodeConstants {
     SLLW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, ALUOpType.sllw, SelImm.X    , xWen = T, canRobCompress = T),
     SRAW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, ALUOpType.sraw, SelImm.X    , xWen = T, canRobCompress = T),
     SRLW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, ALUOpType.srlw, SelImm.X    , xWen = T, canRobCompress = T),
-    
+
     // RV64M
     MUL     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mul   , SelImm.X, xWen = T, canRobCompress = T),
     MULH    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mulh  , SelImm.X, xWen = T, canRobCompress = T),
@@ -205,6 +205,10 @@ object XDecode extends DecodeConstants {
     BLTU    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.brh, BRUOpType.bltu  , SelImm.IMM_SB          ),
 
     // System, the immediate12 holds the CSR register.
+
+    // CSR RO should be ahead of CSRRS and CSRRC, since decoder don't handle the inclusive relation-ship among the patterns.
+    CSRRS_RO -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.ro, SelImm.IMM_I, xWen = F, noSpec = T, blockBack = T),
+    CSRRC_RO -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.ro, SelImm.IMM_I, xWen = F, noSpec = T, blockBack = T),
     CSRRW   -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.wrt , SelImm.IMM_I, xWen = T, noSpec = T, blockBack = T),
     CSRRS   -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.set , SelImm.IMM_I, xWen = T, noSpec = T, blockBack = T),
     CSRRC   -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.clr , SelImm.IMM_I, xWen = T, noSpec = T, blockBack = T),
@@ -212,9 +216,6 @@ object XDecode extends DecodeConstants {
     CSRRWI  -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.wrti, SelImm.IMM_Z, xWen = T, noSpec = T, blockBack = T),
     CSRRSI  -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.seti, SelImm.IMM_Z, xWen = T, noSpec = T, blockBack = T),
     CSRRCI  -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.clri, SelImm.IMM_Z, xWen = T, noSpec = T, blockBack = T),
-
-    CSRRS_RO-> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.ro  , SelImm.IMM_I, xWen = F, noSpec = T, blockBack = T),
-    CSRRC_RO-> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.ro  , SelImm.IMM_I, xWen = F, noSpec = T, blockBack = T),
 
     EBREAK  -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.jmp, SelImm.IMM_I, xWen = T, noSpec = T, blockBack = T),
     ECALL   -> XSDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.csr, CSROpType.jmp, SelImm.IMM_I, xWen = T, noSpec = T, blockBack = T),
@@ -256,7 +257,7 @@ object XDecode extends DecodeConstants {
 }
 
 object BitmanipDecode extends DecodeConstants{
-  /* 
+  /*
     Note: Some Bitmanip instruction may have different OP code between rv32 and rv64.
     Including pseudo instruction like zext.h, and different funct12 like rev8.
     If some day we need to support change XLEN via CSR, we should care about this.
