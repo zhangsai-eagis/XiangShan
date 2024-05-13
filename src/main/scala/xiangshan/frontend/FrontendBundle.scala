@@ -126,10 +126,10 @@ class FetchToIBuffer(implicit p: Parameters) extends XSBundle {
   val ftqPtr       = new FtqPtr
   val ftqOffset    = Vec(PredictWidth, ValidUndirectioned(UInt(log2Ceil(PredictWidth).W)))
   val ipf          = Vec(PredictWidth, Bool())
+  val igpf          = Vec(PredictWidth, Bool())
   val acf          = Vec(PredictWidth, Bool())
   val crossPageIPFFix = Vec(PredictWidth, Bool())
   val triggered    = Vec(PredictWidth, new TriggerCf)
-
   val topdown_info = new FrontendTopDownBundle
 }
 
@@ -256,10 +256,6 @@ class FoldedHistory(val len: Int, val compLen: Int, val max_update_num: Int)(imp
       // println(f"histLen: ${this.len}, foldedLen: $folded_len")
       for (i <- 0 until len) {
         // println(f"bit[$i], ${resArr(i).mkString}")
-        if (resArr(i).length > 2) {
-          println(f"[warning] update logic of foldest history has two or more levels of xor gates! " +
-            f"histlen:${this.len}, compLen:$compLen, at bit $i")
-        }
         if (resArr(i).length == 0) {
           println(f"[error] bits $i is not assigned in folded hist update logic! histlen:${this.len}, compLen:$compLen")
         }
