@@ -23,7 +23,7 @@ import utils._
 import utility._
 import xiangshan._
 import xiangshan.backend.rob.RobPtr
-import xiangshan.backend.Bundles.DynInst
+import xiangshan.backend.Bundles._
 import xiangshan.backend.fu.FuType
 
 class DispatchQueueIO(enqnum: Int, deqnum: Int, size: Int)(implicit p: Parameters) extends XSBundle {
@@ -56,7 +56,7 @@ class DispatchQueue(size: Int, enqnum: Int, deqnum: Int, dqIndex: Int = 0)(impli
   // queue data array
   private def hasRen: Boolean = true
   val dataModule = Module(new SyncDataModuleTemplate(new DynInst, size, 2 * deqnum, enqnum, hasRen = hasRen))
-  val robIdxEntries = Reg(Vec(size, new RobPtr))
+  val uopEntries = Reg(Vec(size, new DynInst))
   val stateEntries = RegInit(VecInit(Seq.fill(size)(s_invalid)))
   val validDeq0 = RegInit(VecInit(Seq.fill(size)(false.B)))
   val validDeq1 = RegInit(VecInit(Seq.fill(size)(false.B)))
@@ -104,7 +104,7 @@ class DispatchQueue(size: Int, enqnum: Int, deqnum: Int, dqIndex: Int = 0)(impli
   for (i <- 0 until size) {
     val validVec = io.enq.req.map(_.valid).zip(enqIndexOH).map{ case (v, oh) => v && oh(i) }
     when (VecInit(validVec).asUInt.orR && canEnqueue) {
-      robIdxEntries(i) := Mux1H(validVec, io.enq.req.map(_.bits.robIdx))
+      uopEntries(i) := Mux1H(validVec, io.enq.req.map(_.bits))
       stateEntries(i) := s_valid
       if (dqIndex == 0) {
         validDeq0(i) := FuType.isIntDq0Deq0(Mux1H(validVec, io.enq.req.map(_.bits.fuType)))
@@ -133,13 +133,13 @@ class DispatchQueue(size: Int, enqnum: Int, deqnum: Int, dqIndex: Int = 0)(impli
   // redirect: cancel uops currently in the queue
   val needCancel = Wire(Vec(size, Bool()))
   for (i <- 0 until size) {
-    needCancel(i) := stateEntries(i) =/= s_invalid && robIdxEntries(i).needFlush(io.redirect)
+    needCancel(i) := stateEntries(i) =/= s_invalid && uopEntries(i).robIdx.needFlush(uopEntries(i), io.redirect)
 
     when(needCancel(i)) {
       stateEntries(i) := s_invalid
     }
 
-    XSInfo(needCancel(i), p"valid entry($i): robIndex ${robIdxEntries(i)} " +
+    XSInfo(needCancel(i), p"valid entry($i): robIndex ${uopEntries(i).robIdx} " +
       p"cancelled with redirect robIndex 0x${Hexadecimal(io.redirect.bits.robIdx.asUInt)}\n")
   }
 

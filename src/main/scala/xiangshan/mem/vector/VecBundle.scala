@@ -24,7 +24,7 @@ import utility._
 import xiangshan._
 import xiangshan.backend.Bundles._
 import xiangshan.backend.rob.RobPtr
-import xiangshan.backend.fu.PMPRespBundle
+import xiangshan.backend.fu._
 import xiangshan.cache.mmu.{TlbCmd, TlbRequestIO}
 import xiangshan.cache._
 
@@ -184,6 +184,7 @@ class FeedbackToSplitIO(implicit p: Parameters) extends VLSUBundle{
 class FeedbackToLsqIO(implicit p: Parameters) extends VLSUBundle{
   val robidx = new RobPtr
   val uopidx = UopIdx()
+  val fuType = FuType()
   val vaddr = UInt(VAddrBits.W)
   val feedback = Vec(VecFeedbacks.allFeedbacks, Bool())
     // for exception

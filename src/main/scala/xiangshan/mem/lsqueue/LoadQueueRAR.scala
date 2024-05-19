@@ -20,6 +20,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import xiangshan._
 import xiangshan.backend.rob.RobPtr
+import xiangshan.backend.Bundles._
 import xiangshan.cache._
 import utils._
 import utility._
@@ -100,7 +101,7 @@ class LoadQueueRAR(implicit p: Parameters) extends XSModule
   // There are still not completed load instructions before the current load instruction.
   // (e.g. "not completed" means that load instruction get the data or exception).
   val canEnqueue = io.query.map(_.req.valid)
-  val cancelEnqueue = io.query.map(_.req.bits.uop.robIdx.needFlush(io.redirect))
+  val cancelEnqueue = io.query.map(x => x.req.bits.uop.robIdx.needFlush(x.req.bits.uop, io.redirect))
   val hasNotWritebackedLoad = io.query.map(_.req.bits.uop.lqIdx).map(lqIdx => isAfter(lqIdx, io.ldWbPtr))
   val needEnqueue = canEnqueue.zip(hasNotWritebackedLoad).zip(cancelEnqueue).map { case ((v, r), c) => v && r && !c }
 
@@ -162,7 +163,7 @@ class LoadQueueRAR(implicit p: Parameters) extends XSModule
   val vecLdCancel = Wire(Vec(LoadQueueRARSize, Bool()))
   for (i <- 0 until LoadQueueRARSize) {
     val deqNotBlock = !isBefore(io.ldWbPtr, uop(i).lqIdx)
-    val needFlush = uop(i).robIdx.needFlush(io.redirect)
+    val needFlush = uop(i).robIdx.needFlush(uop(i), io.redirect)
     val fbk = io.vecFeedback
     for (j <- 0 until VecLoadPipelineWidth) {
       vecLdCanceltmp(i)(j) := fbk(j).valid && fbk(j).bits.isFlush && uop(i).robIdx === fbk(j).bits.robidx && uop(i).uopIdx === fbk(j).bits.uopidx

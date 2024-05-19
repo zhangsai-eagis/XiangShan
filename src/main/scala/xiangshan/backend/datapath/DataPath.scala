@@ -328,7 +328,8 @@ class DataPathImp(override val wrapper: DataPath)(implicit p: Parameters, params
         srcNotBlock := !src0VfBlock && !src1VfBlock && !src1IntBlock && !src0IntBlock
       }
       val notBlock = srcNotBlock && intWbNotBlock(i)(j) && vfWbNotBlock(i)(j)
-      val s1_flush = s0.bits.common.robIdx.needFlush(Seq(io.flush, RegNextWithEnable(io.flush)))
+      val s0_vuopidx = if (s0.bits.common.vpu.isDefined) s0.bits.common.vpu.get.vuopIdx else 0.U(UopIdx.width.W)
+      val s1_flush = s0.bits.common.robIdx.needFlush(s0_vuopidx, s0.bits.common.fuType, Seq(io.flush, RegNextWithEnable(io.flush)))
       val s1_cancel = og1FailedVec2(i)(j)
       val s0_cancel = Wire(Bool())
       if (s0.bits.exuParams.isIQWakeUpSink) {

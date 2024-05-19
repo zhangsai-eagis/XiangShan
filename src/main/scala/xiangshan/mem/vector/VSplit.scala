@@ -45,21 +45,22 @@ class VSplitPipeline(isVStore: Boolean = false)(implicit p: Parameters) extends 
     * decode and generate AlignedType, uop mask, preIsSplit
     * ----------------------------------------------------------
     */
-  val s0_vtype = io.in.bits.uop.vpu.vtype
+  val s0_uop = io.in.bits.uop
+  val s0_vtype = s0_uop.vpu.vtype
   val s0_sew = s0_vtype.vsew
-  val s0_eew = io.in.bits.uop.vpu.veew
+  val s0_eew = s0_uop.vpu.veew
   val s0_lmul = s0_vtype.vlmul
   // when load whole register or unit-stride masked , emul should be 1
-  val s0_fuOpType = io.in.bits.uop.fuOpType
+  val s0_fuOpType = s0_uop.fuOpType
   val s0_mop = s0_fuOpType(6, 5)
-  val s0_nf = Mux(us_whole_reg(s0_fuOpType), 0.U, io.in.bits.uop.vpu.nf)
-  val s0_vm = io.in.bits.uop.vpu.vm
-  val s0_emul = Mux(us_whole_reg(s0_fuOpType) ,GenUSWholeEmul(io.in.bits.uop.vpu.nf), Mux(us_mask(s0_fuOpType), 0.U(mulBits.W), EewLog2(s0_eew) - s0_sew + s0_lmul))
+  val s0_nf = Mux(us_whole_reg(s0_fuOpType), 0.U, s0_uop.vpu.nf)
+  val s0_vm = s0_uop.vpu.vm
+  val s0_emul = Mux(us_whole_reg(s0_fuOpType) ,GenUSWholeEmul(s0_uop.vpu.nf), Mux(us_mask(s0_fuOpType), 0.U(mulBits.W), EewLog2(s0_eew) - s0_sew + s0_lmul))
   val s0_preIsSplit = !(isUnitStride(s0_mop) && !us_fof(s0_fuOpType))
   val s0_nfield        = s0_nf +& 1.U
 
   val s0_valid         = Wire(Bool())
-  val s0_kill          = io.in.bits.uop.robIdx.needFlush(io.redirect)
+  val s0_kill          = s0_uop.robIdx.needFlush(s0_uop, io.redirect)
   val s0_can_go        = s1_ready
   val s0_fire          = s0_valid && s0_can_go
   val s0_out           = Wire(new VLSBundle(isVStore))
@@ -187,8 +188,9 @@ class VSplitPipeline(isVStore: Boolean = false)(implicit p: Parameters) extends 
   s1_in := RegEnable(s0_out, s0_fire)
 
   val s1_flowNum          = s1_in.flowNum
-  val s1_uopidx           = s1_in.uop.vpu.vuopIdx
-  val s1_nf               = s1_in.uop.vpu.nf
+  val s1_uop              = s1_in.uop
+  val s1_uopidx           = s1_uop.vpu.vuopIdx
+  val s1_nf               = s1_uop.vpu.nf
   val s1_nfields          = s1_in.nfields
   val s1_eew              = s1_in.eew
   val s1_emul             = s1_in.emul
@@ -210,13 +212,13 @@ class VSplitPipeline(isVStore: Boolean = false)(implicit p: Parameters) extends 
   val stride     = Mux(isIndexed(s1_instType), s1_stride, s1_notIndexedStride).asUInt // if is index instructions, get index when split
   val uopOffset  = genVUopOffset(s1_instType, s1_fof, s1_uopidx, s1_nf, s1_eew(1, 0), stride, s1_alignedType)
 
-  s1_kill               := s1_in.uop.robIdx.needFlush(io.redirect)
+  s1_kill               := s1_uop.robIdx.needFlush(s1_uop, io.redirect)
 
   // query mergeBuffer
   io.toMergeBuffer.req.valid             := s1_fire // only can_go will get MergeBuffer entry
   io.toMergeBuffer.req.bits.flowNum      := Mux(s1_in.preIsSplit, PopCount(s1_in.flowMask), s1_flowNum)
   io.toMergeBuffer.req.bits.data         := s1_in.data
-  io.toMergeBuffer.req.bits.uop          := s1_in.uop
+  io.toMergeBuffer.req.bits.uop          := s1_uop
   io.toMergeBuffer.req.bits.mask         := s1_mask
   io.toMergeBuffer.req.bits.vaddr        := DontCare
   io.toMergeBuffer.req.bits.vdIdx        := s1_vdIdx  //TODO vdIdxReg should no longer be useful, don't delete it for now
@@ -274,7 +276,7 @@ abstract class VSplitBuffer(isVStore: Boolean = false)(implicit p: Parameters) e
   /**
     * Redirect
     */
-  val cancelEnq    = io.in.bits.uop.robIdx.needFlush(io.redirect)
+  val cancelEnq    = io.in.bits.uop.robIdx.needFlush(io.in.bits.uop, io.redirect)
   val canEnqueue   = io.in.valid
   val needEnqueue  = canEnqueue && !cancelEnq
 
@@ -308,7 +310,7 @@ abstract class VSplitBuffer(isVStore: Boolean = false)(implicit p: Parameters) e
     selValidReg := true.B
   }
   // 1 -> 0
-  when((uopq(selIdxReg).uop.robIdx.needFlush(io.redirect) || !selValid && splitFinish && (activeIssue || inActiveIssue)) &&
+  when((uopq(selIdxReg).uop.robIdx.needFlush(uopq(selIdxReg).uop, io.redirect) || !selValid && splitFinish && (activeIssue || inActiveIssue)) &&
        selValidReg){
 
     selValidReg := false.B
@@ -399,7 +401,7 @@ abstract class VSplitBuffer(isVStore: Boolean = false)(implicit p: Parameters) e
 
   // redirect
   for (i <- 0 until bufferSize){
-    needCancel(i) := uopq(i).uop.robIdx.needFlush(io.redirect) && allocated(i)
+    needCancel(i) := uopq(i).uop.robIdx.needFlush(uopq(i).uop, io.redirect) && allocated(i)
   }
 
  /* Execute logic */
@@ -411,7 +413,7 @@ abstract class VSplitBuffer(isVStore: Boolean = false)(implicit p: Parameters) e
   // handshake
   activeIssue := issueValid && allowIssue && (vecActive || !issuePreIsSplit) // active issue, current use in no unit-stride
   inActiveIssue := issueValid && !vecActive && issuePreIsSplit
-  when (!issueEntry.uop.robIdx.needFlush(io.redirect)) {
+  when (!issueEntry.uop.robIdx.needFlush(issueEntry.uop, io.redirect)) {
     when (!splitFinish) {
       when (activeIssue || inActiveIssue) {
         // The uop has not been entirly splited yet

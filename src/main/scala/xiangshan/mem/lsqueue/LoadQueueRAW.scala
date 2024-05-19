@@ -21,6 +21,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import xiangshan._
 import xiangshan.backend.rob.RobPtr
+import xiangshan.backend.Bundles._
 import xiangshan.cache._
 import xiangshan.frontend.FtqPtr
 import xiangshan.mem.mdp._
@@ -106,7 +107,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
 
   //  LoadQueueRAW enqueue
   val canEnqueue = io.query.map(_.req.valid)
-  val cancelEnqueue = io.query.map(_.req.bits.uop.robIdx.needFlush(io.redirect))
+  val cancelEnqueue = io.query.map(x => x.req.bits.uop.robIdx.needFlush(x.req.bits.uop, io.redirect))
   val allAddrCheck = io.stIssuePtr === io.stAddrReadySqPtr
   val hasAddrInvalidStore = io.query.map(_.req.bits.uop.sqIdx).map(sqIdx => {
     Mux(!allAddrCheck, isBefore(io.stAddrReadySqPtr, sqIdx), false.B)
@@ -181,7 +182,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
   val vecLdCancel = Wire(Vec(LoadQueueRAWSize, Bool()))
   for (i <- 0 until LoadQueueRAWSize) {
     val deqNotBlock = Mux(!allAddrCheck, !isBefore(io.stAddrReadySqPtr, uop(i).sqIdx), true.B)
-    val needCancel = uop(i).robIdx.needFlush(io.redirect)
+    val needCancel = uop(i).robIdx.needFlush(uop(i), io.redirect)
     val fbk = io.vecFeedback
     for (j <- 0 until VecLoadPipelineWidth) {
       vecLdCanceltmp(i)(j) := fbk(j).valid && fbk(j).bits.isFlush && uop(i).robIdx === fbk(j).bits.robidx && uop(i).uopIdx === fbk(j).bits.uopidx
@@ -301,13 +302,13 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
       val (selValid, selBits) = selectPartialOldest(valid, bits)
       val selValidNext = RegNext(selValid(0))
       val selBitsNext = RegNext(selBits(0))
-      (Seq(selValidNext && !selBitsNext.uop.robIdx.needFlush(io.redirect) && !selBitsNext.uop.robIdx.needFlush(RegNext(io.redirect))), Seq(selBitsNext))
+      (Seq(selValidNext && !selBitsNext.uop.robIdx.needFlush(selBitsNext.uop, io.redirect) && !selBitsNext.uop.robIdx.needFlush(selBitsNext.uop, RegNext(io.redirect))), Seq(selBitsNext))
     } else {
       val select = (0 until numSelectGroups).map(g => {
         val (selValid, selBits) = selectPartialOldest(selectValidGroups(g), selectBitsGroups(g))
         val selValidNext = RegNext(selValid(0))
         val selBitsNext = RegNext(selBits(0))
-        (selValidNext && !selBitsNext.uop.robIdx.needFlush(io.redirect) && !selBitsNext.uop.robIdx.needFlush(RegNext(io.redirect)), selBitsNext)
+        (selValidNext && !selBitsNext.uop.robIdx.needFlush(selBitsNext.uop, io.redirect) && !selBitsNext.uop.robIdx.needFlush(selBitsNext.uop, RegNext(io.redirect)), selBitsNext)
       })
       selectOldest(select.map(_._1), select.map(_._2))
     }
@@ -327,7 +328,7 @@ class LoadQueueRAW(implicit p: Parameters) extends XSModule
 
     val addrMaskMatch = RegNext(paddrModule.io.violationMmask(i).asUInt & maskModule.io.violationMmask(i).asUInt) | bypassMaskUInt
     val entryNeedCheck = RegNext(VecInit((0 until LoadQueueRAWSize).map(j => {
-      allocated(j) && isAfter(uop(j).robIdx, storeIn(i).bits.uop.robIdx) && datavalid(j) && !uop(j).robIdx.needFlush(io.redirect)
+      allocated(j) && isAfter(uop(j).robIdx, storeIn(i).bits.uop.robIdx) && datavalid(j) && !uop(j).robIdx.needFlush(uop(j), io.redirect)
     })))
     val lqViolationSelVec = VecInit((0 until LoadQueueRAWSize).map(j => {
       addrMaskMatch(j) && entryNeedCheck(j)

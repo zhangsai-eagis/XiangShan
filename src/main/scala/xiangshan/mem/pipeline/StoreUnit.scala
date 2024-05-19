@@ -27,6 +27,7 @@ import xiangshan.backend.Bundles.{MemExuInput, MemExuOutput}
 import xiangshan.backend.fu.PMPRespBundle
 import xiangshan.backend.fu.FuConfig._
 import xiangshan.backend.fu.FuType._
+import xiangshan.backend.Bundles._
 import xiangshan.backend.ctrlblock.DebugLsInfoBundle
 import xiangshan.cache.mmu.{TlbCmd, TlbReq, TlbRequestIO, TlbResp}
 import xiangshan.cache.{DcacheStoreRequestIO, DCacheStoreIO, MemoryOpConstants, HasDCacheParameters, StorePrefetchReq}
@@ -85,7 +86,7 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   val s0_instr_type   = Mux(s0_use_flow_rs || s0_use_flow_vec, STORE_SOURCE.U, DCACHE_PREFETCH_SOURCE.U)
   val s0_wlineflag    = Mux(s0_use_flow_rs, s0_uop.fuOpType === LSUOpType.cbo_zero, false.B)
   val s0_out          = Wire(new LsPipelineBundle)
-  val s0_kill         = s0_uop.robIdx.needFlush(io.redirect)
+  val s0_kill         = s0_uop.robIdx.needFlush(s0_uop, io.redirect)
   val s0_can_go       = s1_ready
   val s0_fire         = s0_valid && !s0_kill && s0_can_go
   val s0_is128bit     = is128Bit(s0_vecstin.alignedType)
@@ -217,7 +218,7 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   val s1_exception = ExceptionNO.selectByFu(s1_out.uop.exceptionVec, StaCfg).asUInt.orR
   val s1_isvec     = RegEnable(s0_out.isvec, false.B, s0_fire)
   // val s1_isLastElem = RegEnable(s0_isLastElem, false.B, s0_fire)
-  s1_kill := s1_in.uop.robIdx.needFlush(io.redirect) || (s1_tlb_miss && !s1_isvec)
+  s1_kill := s1_in.uop.robIdx.needFlush(s1_in.uop, io.redirect) || (s1_tlb_miss && !s1_isvec)
 
   s1_ready := !s1_valid || s1_kill || s2_ready
   io.tlb.resp.ready := true.B // TODO: why dtlbResp needs a ready?
@@ -272,7 +273,7 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   io.lsq.bits.miss := s1_tlb_miss
 
   // kill dcache write intent request when tlb miss or exception
-  io.dcache.s1_kill  := (s1_tlb_miss || s1_exception || s1_mmio || s1_in.uop.robIdx.needFlush(io.redirect))
+  io.dcache.s1_kill  := (s1_tlb_miss || s1_exception || s1_mmio || s1_in.uop.robIdx.needFlush(s1_in.uop, io.redirect))
   io.dcache.s1_paddr := s1_paddr
 
   // write below io.out.bits assign sentence to prevent overwriting values
@@ -304,7 +305,7 @@ class StoreUnit(implicit p: Parameters) extends XSModule
 
   val s2_exception = (ExceptionNO.selectByFu(s2_out.uop.exceptionVec, StaCfg).asUInt.orR) && RegNext(s1_feedback.bits.hit)
   val s2_mmio = (s2_in.mmio || s2_pmp.mmio) && RegNext(s1_feedback.bits.hit)
-  s2_kill := ((s2_mmio && !s2_exception) && !s2_in.isvec) || s2_in.uop.robIdx.needFlush(io.redirect)
+  s2_kill := ((s2_mmio && !s2_exception) && !s2_in.isvec) || s2_in.uop.robIdx.needFlush(s2_in.uop, io.redirect)
 
   s2_out        := s2_in
   s2_out.mmio   := s2_mmio && !s2_exception
@@ -312,16 +313,16 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   s2_out.uop.exceptionVec(storeAccessFault) := (s2_in.uop.exceptionVec(storeAccessFault) || s2_pmp.st) && s2_vecActive
 
   // kill dcache write intent request when mmio or exception
-  io.dcache.s2_kill := (s2_mmio || s2_exception || s2_in.uop.robIdx.needFlush(io.redirect))
+  io.dcache.s2_kill := (s2_mmio || s2_exception || s2_in.uop.robIdx.needFlush(s2_in.uop, io.redirect))
   io.dcache.s2_pc   := s2_out.uop.pc
   // TODO: dcache resp
   io.dcache.resp.ready := true.B
 
   // feedback tlb miss to RS in store_s2
-  io.feedback_slow.valid := RegNext(s1_feedback.valid && !s1_out.uop.robIdx.needFlush(io.redirect)) && !RegNext(s1_out.isvec)
+  io.feedback_slow.valid := RegNext(s1_feedback.valid && !s1_out.uop.robIdx.needFlush(s1_out.uop, io.redirect)) && !RegNext(s1_out.isvec)
   io.feedback_slow.bits  := RegNext(s1_feedback.bits)
 
-  val s2_vecFeedback = RegNext(!s1_out.uop.robIdx.needFlush(io.redirect) && s1_feedback.bits.hit) && s2_in.isvec
+  val s2_vecFeedback = RegNext(!s1_out.uop.robIdx.needFlush(s1_out.uop, io.redirect) && s1_feedback.bits.hit) && s2_in.isvec
 
   // mmio and exception
   io.lsq_replenish := s2_out
@@ -351,7 +352,7 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   val s3_valid  = RegInit(false.B)
   val s3_in     = RegEnable(s2_out, s2_fire)
   val s3_out    = Wire(new MemExuOutput(isVector = true))
-  val s3_kill   = s3_in.uop.robIdx.needFlush(io.redirect)
+  val s3_kill   = s3_in.uop.robIdx.needFlush(s3_in.uop, io.redirect)
   val s3_can_go = s3_ready
   val s3_fire   = s3_valid && !s3_kill && s3_can_go
   val s3_vecFeedback = RegEnable(s2_vecFeedback, s2_fire)
@@ -397,12 +398,12 @@ class StoreUnit(implicit p: Parameters) extends XSModule
       sx_in(i).mbIndex     := s3_in.mbIndex
       sx_in(i).mask        := s3_in.mask
       sx_in(i).vaddr       := s3_in.vaddr
-      sx_ready(i) := !s3_valid(i) || sx_in(i).output.uop.robIdx.needFlush(io.redirect) || (if (TotalDelayCycles == 0) io.stout.ready else sx_ready(i+1))
+      sx_ready(i) := !s3_valid(i) || sx_in(i).output.uop.robIdx.needFlush(sx_in(i).output.uop, io.redirect) || (if (TotalDelayCycles == 0) io.stout.ready else sx_ready(i+1))
     } else {
-      val cur_kill   = sx_in(i).output.uop.robIdx.needFlush(io.redirect)
+      val cur_kill   = sx_in(i).output.uop.robIdx.needFlush(sx_in(i).output.uop, io.redirect)
       val cur_can_go = (if (i == TotalDelayCycles) io.stout.ready else sx_ready(i+1))
       val cur_fire   = sx_valid(i) && !cur_kill && cur_can_go
-      val prev_fire  = sx_valid(i-1) && !sx_in(i-1).output.uop.robIdx.needFlush(io.redirect) && sx_ready(i)
+      val prev_fire  = sx_valid(i-1) && !sx_in(i-1).output.uop.robIdx.needFlush(sx_in(i-1).output.uop, io.redirect) && sx_ready(i)
 
       sx_ready(i) := !sx_valid(i) || cur_kill || (if (i == TotalDelayCycles) io.stout.ready else sx_ready(i+1))
       val sx_valid_can_go = prev_fire || cur_fire || cur_kill
@@ -413,12 +414,12 @@ class StoreUnit(implicit p: Parameters) extends XSModule
   val sx_last_valid = sx_valid.takeRight(1).head
   val sx_last_ready = sx_ready.takeRight(1).head
   val sx_last_in    = sx_in.takeRight(1).head
-  sx_last_ready := !sx_last_valid || sx_last_in.output.uop.robIdx.needFlush(io.redirect) || io.stout.ready
+  sx_last_ready := !sx_last_valid || sx_last_in.output.uop.robIdx.needFlush(sx_last_in.output.uop, io.redirect) || io.stout.ready
 
-  io.stout.valid := sx_last_valid && !sx_last_in.output.uop.robIdx.needFlush(io.redirect) && isStore(sx_last_in.output.uop.fuType)
+  io.stout.valid := sx_last_valid && !sx_last_in.output.uop.robIdx.needFlush(sx_last_in.output.uop, io.redirect) && isStore(sx_last_in.output.uop.fuType)
   io.stout.bits := sx_last_in.output
 
-  io.vecstout.valid := sx_last_valid && !sx_last_in.output.uop.robIdx.needFlush(io.redirect) && isVStore(sx_last_in.output.uop.fuType)
+  io.vecstout.valid := sx_last_valid && !sx_last_in.output.uop.robIdx.needFlush(sx_last_in.output.uop, io.redirect) && isVStore(sx_last_in.output.uop.fuType)
   // TODO: implement it!
   io.vecstout.bits.mBIndex := sx_last_in.mbIndex
   io.vecstout.bits.hit := sx_last_in.vecFeedback

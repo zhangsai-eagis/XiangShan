@@ -24,7 +24,7 @@ import xiangshan.ExceptionNO._
 import xiangshan.cache._
 import utils._
 import utility._
-import xiangshan.backend.Bundles.{DynInst, MemExuOutput}
+import xiangshan.backend.Bundles._
 import xiangshan.backend.fu.FuConfig.LduCfg
 import xiangshan.backend.decode.isa.bitfield.{InstVType, XSInstBitFields}
 
@@ -90,11 +90,11 @@ class VirtualLoadQueue(implicit p: Parameters) extends XSModule
   val allowEnqueue = validCount <= (VirtualLoadQueueSize - LSQLdEnqWidth).U
   val canEnqueue = io.enq.req.map(_.valid)
   val needCancel = WireInit(VecInit((0 until VirtualLoadQueueSize).map(i => {
-    uop(i).robIdx.needFlush(io.redirect) && allocated(i)
+    uop(i).robIdx.needFlush(uop(i), io.redirect) && allocated(i)
   })))
   val lastNeedCancel = RegNext(needCancel)
   val enqCancel = canEnqueue.zip(io.enq.req).map{case (v , x) =>
-    v && x.bits.robIdx.needFlush(io.redirect)
+    v && x.bits.robIdx.needFlush(x.bits, io.redirect)
   }
   val enqCancelNum = enqCancel.zip(io.enq.req).map{case (v, req) =>
     Mux(v, req.bits.numLsElem, 0.U)

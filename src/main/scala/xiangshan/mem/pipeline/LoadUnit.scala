@@ -26,6 +26,7 @@ import xiangshan._
 import xiangshan.backend.Bundles.{DynInst, MemExuInput, MemExuOutput}
 import xiangshan.backend.fu.PMPRespBundle
 import xiangshan.backend.fu.FuConfig._
+import xiangshan.backend.Bundles._
 import xiangshan.backend.ctrlblock.{DebugLsInfoBundle, LsTopdownInfo}
 import xiangshan.backend.rob.RobPtr
 import xiangshan.backend.ctrlblock.DebugLsInfoBundle
@@ -829,8 +830,8 @@ class LoadUnit(implicit p: Parameters) extends XSModule
 
   s1_kill := s1_fast_rep_dly_kill ||
              s1_cancel_ptr_chasing ||
-             s1_in.uop.robIdx.needFlush(io.redirect) ||
-            (s1_in.uop.robIdx.needFlush(RegNext(io.redirect)) && !RegNext(s0_try_ptr_chasing)) ||
+             s1_in.uop.robIdx.needFlush(s1_in.uop, io.redirect) ||
+            (s1_in.uop.robIdx.needFlush(s1_in.uop, RegNext(io.redirect)) && !RegNext(s0_try_ptr_chasing)) ||
              RegEnable(s0_kill, false.B, io.ldin.valid || io.vecldin.valid || io.replay.valid || io.l2l_fwd_in.valid || io.fast_rep_in.valid)
 
   if (EnableLoadToLoadForward) {
@@ -907,7 +908,7 @@ class LoadUnit(implicit p: Parameters) extends XSModule
   val s2_vecActive = RegEnable(s1_out.vecActive, true.B, s1_fire)
   val s2_isvec  = RegEnable(s1_out.isvec, false.B, s1_fire)
 
-  s2_kill := s2_in.uop.robIdx.needFlush(io.redirect)
+  s2_kill := s2_in.uop.robIdx.needFlush(s2_in.uop, io.redirect)
   s2_ready := !s2_valid || s2_kill || s3_ready
   when (s1_fire) { s2_valid := true.B }
   .elsewhen (s2_fire) { s2_valid := false.B }
@@ -1163,14 +1164,14 @@ class LoadUnit(implicit p: Parameters) extends XSModule
   // stage 3
   // --------------------------------------------------------------------------------
   // writeback and update load queue
-  val s3_valid        = RegNext(s2_valid && !s2_out.isHWPrefetch && !s2_out.uop.robIdx.needFlush(io.redirect))
+  val s3_valid        = RegNext(s2_valid && !s2_out.isHWPrefetch && !s2_out.uop.robIdx.needFlush(s2_out.uop, io.redirect))
   val s3_in           = RegEnable(s2_out, s2_fire)
   val s3_out          = Wire(Valid(new MemExuOutput))
   val s3_dcache_rep   = RegEnable(s2_dcache_fast_rep && s2_troublem, false.B, s2_fire)
   val s3_ld_valid_dup = RegEnable(s2_ld_valid_dup, s2_fire)
   val s3_fast_rep     = Wire(Bool())
   val s3_troublem     = RegNext(s2_troublem)
-  val s3_kill         = s3_in.uop.robIdx.needFlush(io.redirect)
+  val s3_kill         = s3_in.uop.robIdx.needFlush(s3_in.uop, io.redirect)
   val s3_vecout       = Wire(new OnlyVecExuOutput)
   val s3_vecActive    = RegEnable(s2_out.vecActive, true.B, s2_fire)
   val s3_isvec        = RegEnable(s2_out.isvec, false.B, s2_fire)
@@ -1194,7 +1195,7 @@ class LoadUnit(implicit p: Parameters) extends XSModule
   val s3_fast_rep_canceled = io.replay.valid && io.replay.bits.forward_tlDchannel || !io.dcache.req.ready
 
   // s3 load fast replay
-  io.fast_rep_out.valid := s3_valid && s3_fast_rep && !s3_in.uop.robIdx.needFlush(io.redirect)
+  io.fast_rep_out.valid := s3_valid && s3_fast_rep && !s3_in.uop.robIdx.needFlush(s3_in.uop, io.redirect)
   io.fast_rep_out.bits := s3_in
 
   io.lsq.ldin.valid := s3_valid && (!s3_fast_rep || s3_fast_rep_canceled) && !s3_in.feedbacked
@@ -1397,9 +1398,9 @@ class LoadUnit(implicit p: Parameters) extends XSModule
   io.vecldout.bits.vaddr := s3_in.vaddr
   io.vecldout.bits.mmio := DontCare
 
-  io.vecldout.valid := s3_out.valid && !s3_out.bits.uop.robIdx.needFlush(io.redirect) && s3_vecout.isvec ||
+  io.vecldout.valid := s3_out.valid && !s3_out.bits.uop.robIdx.needFlush(s3_out.bits.uop, io.redirect) && s3_vecout.isvec ||
   // TODO: check this, why !io.lsq.uncache.bits.isVls before?
-    io.lsq.uncache.valid && !io.lsq.uncache.bits.uop.robIdx.needFlush(io.redirect) && !s3_out.valid && io.lsq.uncache.bits.isVls
+    io.lsq.uncache.valid && !io.lsq.uncache.bits.uop.robIdx.needFlush(io.lsq.uncache.bits.uop, io.redirect) && !s3_out.valid && io.lsq.uncache.bits.isVls
     //io.lsq.uncache.valid && !io.lsq.uncache.bits.uop.robIdx.needFlush(io.redirect) && !s3_out.valid && !io.lsq.uncache.bits.isVls
 
   // fast load to load forward

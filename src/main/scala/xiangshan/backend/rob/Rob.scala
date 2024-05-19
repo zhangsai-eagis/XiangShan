@@ -25,7 +25,7 @@ import utility._
 import utils._
 import xiangshan._
 import xiangshan.backend.BackendParams
-import xiangshan.backend.Bundles.{DynInst, ExceptionInfo, ExuOutput}
+import xiangshan.backend.Bundles.{DynInst, ExceptionInfo, ExuOutput, UopIdx}
 import xiangshan.backend.fu.{FuConfig, FuType}
 import xiangshan.frontend.FtqPtr
 import xiangshan.mem.{LqPtr, LsqEnqIO, SqPtr}
@@ -41,12 +41,75 @@ class RobPtr(entries: Int) extends CircularQueuePtr[RobPtr](
 
   def this()(implicit p: Parameters) = this(p(XSCoreParamsKey).RobSize)
 
+  def needFlushSelf(redirect: Valid[Redirect]): Bool = {
+    redirect.valid && redirect.bits.flushItself() && this === redirect.bits.robIdx
+  }
+  def needFlushAfter(redirect: Valid[Redirect]): Bool = {
+    redirect.valid && isAfter(this, redirect.bits.robIdx)
+  }
+
   def needFlush(redirect: Valid[Redirect]): Bool = {
-    val flushItself = redirect.bits.flushItself() && this === redirect.bits.robIdx
-    redirect.valid && (flushItself || isAfter(this, redirect.bits.robIdx))
+    needFlushSelf(redirect) || needFlushAfter(redirect)
   }
 
   def needFlush(redirect: Seq[Valid[Redirect]]): Bool = VecInit(redirect.map(needFlush)).asUInt.orR
+
+
+  /**
+   *
+   * NOTE: In theory, only modules related to vector memory access need to use this API.
+   *
+   * For vector load/store instructions, it needs to make a more fine-grained judgment according to UopIdx.
+   * No more fine-grained judgment is required for scalar instructions.
+   *
+   * @param vuopIdx The uop index of the vector instruction.
+   * @param fuType Used to determine whether the instruction type is vector Load/Store.
+   * @param redirect Redirection signal
+   * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
+   */
+    //TODO The use of 'vuopIdx' and 'uopIdx' needs further discussion.
+  def needFlush(vuopIdx: UInt, fuType: UInt, redirect: Valid[Redirect])(implicit p: Parameters): Bool = {
+    require(vuopIdx.getWidth == UopIdx.width, "The width of parameters 'vuopIdx' is incorrect")
+    require(fuType.getWidth  == FuType.width, "The width of parameters 'fuType' is incorrect")
+
+    val vUopIdx             = vuopIdx
+    val isVls               = FuType.isVls(fuType)
+    val isVUopIdxNeedFlush  = vUopIdx >= redirect.bits.vuopIdx
+    // 'vUopIdx' only needs to be judged if 'RobIdx' is equal.
+    // Older instructions must have been washed out and VUop should no longer be judged.
+    (this.needFlushSelf(redirect) && (!isVls || isVUopIdxNeedFlush)) || this.needFlushAfter(redirect)
+  }
+
+  /**
+   *
+   * NOTE: In theory, only modules related to vector memory access need to use this API.
+   *
+   * For vector load/store instructions, it needs to make a more fine-grained judgment according to UopIdx.
+   * No more fine-grained judgment is required for scalar instructions.
+   *
+   * @param vuopIdx The uop index of the vector instruction.
+   * @param fuType Used to determine whether the instruction type is vector Load/Store.
+   * @param redirect Redirection signal groups.
+   * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
+   */
+  def needFlush(vuopIdx: UInt, fuType: UInt, redirect: Seq[Valid[Redirect]])(implicit p: Parameters): Bool = {
+    VecInit(redirect.map(x => this.needFlush(vuopIdx, fuType, x))).asUInt.orR
+  }
+
+  /**
+   *
+   * NOTE: In theory, only modules related to vector memory access need to use this API.
+   *
+   * For vector load/store instructions, it needs to make a more fine-grained judgment according to UopIdx.
+   * No more fine-grained judgment is required for scalar instructions.
+   *
+   * @param uop Determines whether an item needs to be flushed.
+   * @param redirect Redirection signal.
+   * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
+   */
+  def needFlush(uop: DynInst, redirect: Valid[Redirect])(implicit p: Parameters): Bool = {
+    needFlush(uop.uopIdx, uop.fuType, redirect)
+  }
 }
 
 object RobPtr {
@@ -219,6 +282,7 @@ class RobExceptionInfo(implicit p: Parameters) extends XSBundle {
   val trigger = new TriggerCf
   val vstartEn = Bool()
   val vstart = UInt(XLEN.W)
+  val vuopIdx = UopIdx()
 
   def has_exception = exceptionVec.asUInt.orR || flushPipe || singleStep || replayInst || trigger.canFire
   def not_commit = exceptionVec.asUInt.orR || singleStep || replayInst || trigger.canFire
@@ -786,6 +850,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   io.flushOut.bits.robIdx := Mux(needModifyFtqIdxOffset, firstVInstrRobIdx, deqPtr)
   io.flushOut.bits.ftqIdx := Mux(needModifyFtqIdxOffset, firstVInstrFtqPtr, deqDispatchData.ftqIdx)
   io.flushOut.bits.ftqOffset := Mux(needModifyFtqIdxOffset, firstVInstrFtqOffset, deqDispatchData.ftqOffset)
+  io.flushOut.bits.vuopIdx   := exceptionDataRead.bits.vuopIdx
   io.flushOut.bits.level := Mux(deqHasReplayInst || intrEnable || exceptionEnable || needModifyFtqIdxOffset, RedirectLevel.flush, RedirectLevel.flushAfter) // TODO use this to implement "exception next"
   io.flushOut.bits.interrupt := true.B
   XSPerfAccumulate("interrupt_num", io.flushOut.valid && intrEnable)
@@ -1356,6 +1421,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     exceptionGen.io.enq(i).bits.trigger.frontendCanFire := io.enq.req(i).bits.trigger.frontendCanFire
     exceptionGen.io.enq(i).bits.vstartEn := false.B //DontCare
     exceptionGen.io.enq(i).bits.vstart := 0.U //DontCare
+    exceptionGen.io.enq(i).bits.vuopIdx := 0.U
   }
 
   println(s"ExceptionGen:")
@@ -1379,6 +1445,11 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     exc_wb.bits.trigger.backendCanFire := trigger.backendCanFire
     exc_wb.bits.vstartEn := false.B //wb.bits.vstartEn.getOrElse(false.B) // todo need add vstart in ExuOutput
     exc_wb.bits.vstart := 0.U //wb.bits.vstart.getOrElse(0.U)
+    val vuopIdx = wb.bits.vls match {
+      case Some(x) => x.vpu.vuopIdx
+      case None => 0.U
+    }
+    exc_wb.bits.vuopIdx := vuopIdx
 //    println(s"  [$i] ${configs.map(_.name)}: exception ${exceptionCases(i)}, " +
 //      s"flushPipe ${configs.exists(_.flushPipe)}, " +
 //      s"replayInst ${configs.exists(_.replayInst)}")

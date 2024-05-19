@@ -719,7 +719,9 @@ class IssueQueueIQWakeUpBundle(
   }
 
   object UopIdx {
-    def apply()(implicit p: Parameters): UInt = UInt(log2Up(p(XSCoreParamsKey).MaxUopSize + 1).W)
+    def width(implicit p: Parameters): Int = log2Up(p(XSCoreParamsKey).MaxUopSize + 1)
+
+    def apply()(implicit p: Parameters): UInt = UInt(width.W)
   }
 
   object FuLatency {

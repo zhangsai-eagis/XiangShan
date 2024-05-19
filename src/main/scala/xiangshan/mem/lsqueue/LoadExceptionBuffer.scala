@@ -23,6 +23,7 @@ import utils._
 import utility._
 import xiangshan._
 import xiangshan.backend.fu.FuConfig._
+import xiangshan.backend.Bundles._
 import xiangshan.backend.fu.fpu.FPU
 import xiangshan.backend.rob.RobLsqIO
 import xiangshan.cache._
@@ -50,8 +51,8 @@ class LqExceptionBuffer(implicit p: Parameters) extends XSModule with HasCircula
   val s2_req = RegNext(s1_req)
   val s2_valid = (0 until LoadPipelineWidth + VecLoadPipelineWidth).map(i =>
     RegNext(s1_valid(i)) &&
-    !s2_req(i).uop.robIdx.needFlush(RegNext(io.redirect)) &&
-    !s2_req(i).uop.robIdx.needFlush(io.redirect)
+    !s2_req(i).uop.robIdx.needFlush(s2_req(i).uop, RegNext(io.redirect)) &&
+    !s2_req(i).uop.robIdx.needFlush(s2_req(i).uop, io.redirect)
   )
   val s2_has_exception = s2_req.map(x => ExceptionNO.selectByFu(x.uop.exceptionVec, LduCfg).asUInt.orR)
 
@@ -60,7 +61,7 @@ class LqExceptionBuffer(implicit p: Parameters) extends XSModule with HasCircula
     s2_enqueue(w) := s2_valid(w) && s2_has_exception(w)
   }
 
-  when (req_valid && req.uop.robIdx.needFlush(io.redirect)) {
+  when (req_valid && req.uop.robIdx.needFlush(req.uop, io.redirect)) {
     req_valid := s2_enqueue.asUInt.orR
   } .elsewhen (s2_enqueue.asUInt.orR) {
     req_valid := req_valid || true.B

@@ -26,12 +26,14 @@ import utils._
 import xiangshan._
 import xiangshan.cache._
 import xiangshan.cache.{DCacheLineIO, DCacheWordIO, MemoryOpConstants}
+import xiangshan.mem._
 import xiangshan.backend._
 import xiangshan.backend.rob.{RobLsqIO, RobPtr}
 import xiangshan.backend.Bundles.{DynInst, MemExuOutput}
 import xiangshan.backend.decode.isa.bitfield.{Riscv32BitInst, XSInstBitFields}
 import xiangshan.backend.fu.FuConfig._
 import xiangshan.backend.fu.FuType
+import xiangshan.backend.Bundles._
 
 class SqPtr(implicit p: Parameters) extends CircularQueuePtr[SqPtr](
   p => p(XSCoreParamsKey).StoreQueueSize
@@ -85,8 +87,8 @@ class StoreExceptionBuffer(implicit p: Parameters) extends XSModule with HasCirc
   val s2_req = RegNext(s1_req)
   val s2_valid = (0 until StorePipelineWidth + VecStorePipelineWidth).map(i =>
     RegNext(s1_valid(i)) &&
-      !s2_req(i).uop.robIdx.needFlush(RegNext(io.redirect)) &&
-      !s2_req(i).uop.robIdx.needFlush(io.redirect)
+      !s2_req(i).uop.robIdx.needFlush(s2_req(i).uop, RegNext(io.redirect)) &&
+      !s2_req(i).uop.robIdx.needFlush(s2_req(i).uop, io.redirect)
   )
   val s2_has_exception = s2_req.map(x => ExceptionNO.selectByFu(x.uop.exceptionVec, StaCfg).asUInt.orR)
 
@@ -95,7 +97,7 @@ class StoreExceptionBuffer(implicit p: Parameters) extends XSModule with HasCirc
     s2_enqueue(w) := s2_valid(w) && s2_has_exception(w)
   }
 
-  when (req_valid && req.uop.robIdx.needFlush(io.redirect)) {
+  when (req_valid && req.uop.robIdx.needFlush(req.uop, io.redirect)) {
     req_valid := s2_enqueue.asUInt.orR
   }.elsewhen (s2_enqueue.asUInt.orR) {
     req_valid := req_valid || true.B
@@ -220,6 +222,7 @@ class StoreQueue(implicit p: Parameters) extends XSModule
     exceptionBuffer.io.storeAddrIn(StorePipelineWidth + i).bits.uop.robIdx     := io.vecFeedback(i).bits.robidx
     exceptionBuffer.io.storeAddrIn(StorePipelineWidth + i).bits.uop.vpu.vstart := io.vecFeedback(i).bits.vstart
     exceptionBuffer.io.storeAddrIn(StorePipelineWidth + i).bits.uop.vpu.vl     := io.vecFeedback(i).bits.vl
+    exceptionBuffer.io.storeAddrIn(StorePipelineWidth + i).bits.uop.fuType     := io.vecFeedback(i).bits.fuType
     exceptionBuffer.io.storeAddrIn(StorePipelineWidth + i).bits.uop.exceptionVec     := io.vecFeedback(i).bits.exceptionVec
   }
 
@@ -320,7 +323,7 @@ class StoreQueue(implicit p: Parameters) extends XSModule
     */
   io.enq.canAccept := allowEnqueue
   val canEnqueue = io.enq.req.map(_.valid)
-  val enqCancel = io.enq.req.map(_.bits.robIdx.needFlush(io.brqRedirect))
+  val enqCancel = io.enq.req.map(x => x.bits.robIdx.needFlush(x.bits, io.brqRedirect))
   val vStoreFlow = io.enq.req.map(_.bits.numLsElem)
   val validVStoreFlow = vStoreFlow.zipWithIndex.map{case (vLoadFlowNumItem, index) => Mux(!RegNext(io.brqRedirect.valid) && io.enq.canAccept && io.enq.lqCanAccept && canEnqueue(index), vLoadFlowNumItem, 0.U)}
   val validVStoreOffset = vStoreFlow.zip(io.enq.needAlloc).map{case (flow, needAllocItem) => Mux(needAllocItem, flow, 0.U)}
@@ -979,7 +982,7 @@ class StoreQueue(implicit p: Parameters) extends XSModule
   // invalidate sq term using robIdx
   val needCancel = Wire(Vec(StoreQueueSize, Bool()))
   for (i <- 0 until StoreQueueSize) {
-    needCancel(i) := uop(i).robIdx.needFlush(io.brqRedirect) && allocated(i) && !committed(i)
+    needCancel(i) := uop(i).robIdx.needFlush(uop(i), io.brqRedirect) && allocated(i) && !committed(i)
     when (needCancel(i)) {
       allocated(i) := false.B
     }
@@ -989,7 +992,7 @@ class StoreQueue(implicit p: Parameters) extends XSModule
 * update pointers
 **/
   val enqCancelValid = canEnqueue.zip(io.enq.req).map{case (v , x) =>
-    v && x.bits.robIdx.needFlush(io.brqRedirect)
+    v && x.bits.robIdx.needFlush(x.bits, io.brqRedirect)
   }
   val enqCancelNum = enqCancelValid.zip(io.enq.req).map{case (v, req) =>
     Mux(v, req.bits.numLsElem, 0.U)

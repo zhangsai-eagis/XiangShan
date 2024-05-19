@@ -84,6 +84,7 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
     val hasExp                               = source.exceptionVec.asUInt.orR
     sink.robidx                             := source.uop.robIdx
     sink.uopidx                             := source.uop.uopIdx
+    sink.fuType                             := source.uop.fuType
     sink.feedback(VecFeedbacks.COMMIT)      := !hasExp
     sink.feedback(VecFeedbacks.FLUSH)       := hasExp
     sink.feedback(VecFeedbacks.LAST)        := true.B
@@ -111,7 +112,7 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
   val needRSReplay = RegInit(VecInit(Seq.fill(uopSize)(false.B)))
   // enq, from splitPipeline
   // val allowEnqueue =
-  val cancelEnq    = io.fromSplit.map(_.req.bits.uop.robIdx.needFlush(io.redirect))
+  val cancelEnq    = io.fromSplit.map(x => x.req.bits.uop.robIdx.needFlush(x.req.bits.uop, io.redirect))
   val canEnqueue   = io.fromSplit.map(_.req.valid)
   val needEnqueue  = (0 until enqWidth).map{i =>
     canEnqueue(i) && !cancelEnq(i)
@@ -144,7 +145,7 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
 
   //redirect
   for (i <- 0 until uopSize){
-    needCancel(i) := entries(i).uop.robIdx.needFlush(io.redirect) && allocated(i)
+    needCancel(i) := entries(i).uop.robIdx.needFlush(entries(i).uop, io.redirect) && allocated(i)
     when (needCancel(i)) {
       allocated(i)   := false.B
       freeMaskVec(i) := true.B
@@ -287,7 +288,7 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
       needRSReplay(entryIdx):= false.B
     }
     //writeback connect
-    port.valid   := selFire && allocated(entryIdx) && !needRSReplay(entryIdx) && !selEntry.uop.robIdx.needFlush(io.redirect)
+    port.valid   := selFire && allocated(entryIdx) && !needRSReplay(entryIdx) && !selEntry.uop.robIdx.needFlush(selEntry.uop, io.redirect)
     port.bits    := DeqConnect(selEntry)
     //to lsq
     lsqport.bits := ToLsqConnect(selEntry) // when uopwriteback, free MBuffer entry, write to lsq
