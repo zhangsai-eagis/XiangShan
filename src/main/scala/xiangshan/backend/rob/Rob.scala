@@ -444,6 +444,10 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
         val hasVsetvl = Output(Bool())
       }
     }
+    val fromDecode = new Bundle {
+      val lastSpecVType = Flipped(Valid(new VType))
+      val specVtype = Input(new VType)
+    }
 
     val debug_ls = Flipped(new DebugLSIO)
     val debugRobHead = Output(new DynInst)
@@ -626,6 +630,8 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   io.toDecode.isResumeVType := vtypeBuffer.io.toDecode.isResumeVType
   io.toDecode.commitVType := vtypeBuffer.io.toDecode.commitVType
   io.toDecode.walkVType := vtypeBuffer.io.toDecode.walkVType
+  vtypeBuffer.io.fromDecode.lastSpecVType := io.fromDecode.lastSpecVType
+  vtypeBuffer.io.fromDecode.specVtype := io.fromDecode.specVtype
 
   /**
     * Enqueue (from dispatch)
