@@ -24,7 +24,7 @@ import utility._
 import utils._
 import xiangshan.ExceptionNO._
 import xiangshan._
-import xiangshan.backend.Bundles.{DecodedInst, DynInst, ExceptionInfo, ExuOutput}
+import xiangshan.backend.Bundles._
 import xiangshan.backend.ctrlblock.{DebugLSIO, DebugLsInfoBundle, LsTopdownInfo, MemCtrl, RedirectGenerator}
 import xiangshan.backend.datapath.DataConfig.VAddrData
 import xiangshan.backend.decode.{DecodeStage, FusionDecoder}
@@ -121,7 +121,15 @@ class CtrlBlockImp(
 
   private val delayedNotFlushedWriteBack = io.fromWB.wbData.map(x => {
     val valid = x.valid
-    val killedByOlder = x.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
+    val vuopIdx = x.bits.vls match {
+      case Some(z) => z.vpu.vuopIdx
+      case None => 0.U(UopIdx.width.W)
+    }
+    val isVls = x.bits.vls match {
+      case Some(z) => true.B
+      case None => false.B
+    }
+    val killedByOlder = x.bits.robIdx.needFlush(vuopIdx, isVls, Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
     val delayed = Wire(Valid(new ExuOutput(x.bits.params)))
     delayed.valid := GatedValidRegNext(valid && !killedByOlder)
     delayed.bits := RegEnable(x.bits, x.valid)
@@ -136,7 +144,15 @@ class CtrlBlockImp(
   val memVloadWbData = io.fromWB.wbData.filter(x => x.bits.params.schdType.isInstanceOf[MemScheduler] && x.bits.params.hasVLoadFu)
   private val delayedNotFlushedWriteBackNums = wbDataNoStd.map(x => {
     val valid = x.valid
-    val killedByOlder = x.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
+    val vuopIdx = x.bits.vls match {
+      case Some(z) => z.vpu.vuopIdx
+      case None => 0.U(UopIdx.width.W)
+    }
+    val isVls = x.bits.vls match {
+      case Some(z) => true.B
+      case None => false.B
+    }
+    val killedByOlder = x.bits.robIdx.needFlush(vuopIdx, isVls, Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
     val delayed = Wire(Valid(UInt(io.fromWB.wbData.size.U.getWidth.W)))
     delayed.valid := GatedValidRegNext(valid && !killedByOlder)
     val isIntSche = intScheWbData.contains(x)
@@ -150,7 +166,15 @@ class CtrlBlockImp(
       Seq(x)
     }
     val sameRobidxBools = VecInit(canSameRobidxWbData.map( wb => {
-      val killedByOlderThat = wb.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
+      val vuopIdx = wb.bits.vls match {
+        case Some(z) => z.vpu.vuopIdx
+        case None => 0.U(UopIdx.width.W)
+      }
+      val isVls = wb.bits.vls match {
+        case Some(z) => true.B
+        case None => false.B
+      }
+      val killedByOlderThat = wb.bits.robIdx.needFlush(vuopIdx, isVls, Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
       (wb.bits.robIdx === x.bits.robIdx) && wb.valid && x.valid && !killedByOlderThat && !killedByOlder
     }).toSeq)
     delayed.bits := RegEnable(PopCount(sameRobidxBools), x.valid)

@@ -68,12 +68,10 @@ class RobPtr(entries: Int) extends CircularQueuePtr[RobPtr](
    * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
    */
     //TODO The use of 'vuopIdx' and 'uopIdx' needs further discussion.
-  def needFlush(vuopIdx: UInt, fuType: UInt, redirect: Valid[Redirect])(implicit p: Parameters): Bool = {
+  def needFlush(vuopIdx: UInt, isVls: Bool, redirect: Valid[Redirect])(implicit p: Parameters): Bool = {
     require(vuopIdx.getWidth == UopIdx.width, "The width of parameters 'vuopIdx' is incorrect")
-    require(fuType.getWidth  == FuType.width, "The width of parameters 'fuType' is incorrect")
 
     val vUopIdx             = vuopIdx
-    val isVls               = FuType.isVls(fuType)
     val isVUopIdxNeedFlush  = vUopIdx >= redirect.bits.vuopIdx
     // 'vUopIdx' only needs to be judged if 'RobIdx' is equal.
     // Older instructions must have been washed out and VUop should no longer be judged.
@@ -88,12 +86,12 @@ class RobPtr(entries: Int) extends CircularQueuePtr[RobPtr](
    * No more fine-grained judgment is required for scalar instructions.
    *
    * @param vuopIdx The uop index of the vector instruction.
-   * @param fuType Used to determine whether the instruction type is vector Load/Store.
+   * @param isVls Used to determine whether the instruction type is vector Load/Store.
    * @param redirect Redirection signal groups.
    * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
    */
-  def needFlush(vuopIdx: UInt, fuType: UInt, redirect: Seq[Valid[Redirect]])(implicit p: Parameters): Bool = {
-    VecInit(redirect.map(x => this.needFlush(vuopIdx, fuType, x))).asUInt.orR
+  def needFlush(vuopIdx: UInt, isVls: Bool, redirect: Seq[Valid[Redirect]])(implicit p: Parameters): Bool = {
+    VecInit(redirect.map(x => this.needFlush(vuopIdx, isVls, x))).asUInt.orR
   }
 
   /**
@@ -108,7 +106,7 @@ class RobPtr(entries: Int) extends CircularQueuePtr[RobPtr](
    * @return Bool, It is necessary to flush to return true; it is not necessary to flush to return false.
    */
   def needFlush(uop: DynInst, redirect: Valid[Redirect])(implicit p: Parameters): Bool = {
-    needFlush(uop.uopIdx, uop.fuType, redirect)
+    needFlush(uop.uopIdx, FuType.isVls(uop.fuType), redirect)
   }
 }
 
@@ -276,6 +274,7 @@ class RobExceptionInfo(implicit p: Parameters) extends XSBundle {
   val exceptionVec = ExceptionVec()
   val flushPipe = Bool()
   val isVset = Bool()
+  val isVls = Bool()
   val replayInst = Bool() // redirect to that inst itself
   val singleStep = Bool() // TODO add frontend hit beneath
   val crossPageIPFFix = Bool()
@@ -293,7 +292,8 @@ class RobExceptionInfo(implicit p: Parameters) extends XSBundle {
 class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelper {
   val io = IO(new Bundle {
     val redirect = Input(Valid(new Redirect))
-    val flush = Input(Bool())
+    val flush = Input(ValidIO(new Redirect))
+//    val flush = Input(Bool())
     val enq = Vec(RenameWidth, Flipped(ValidIO(new RobExceptionInfo)))
     // csr + load + store + varith + vload + vstore
     val wb = Vec(params.numException, Flipped(ValidIO(new RobExceptionInfo)))
@@ -302,6 +302,11 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
   })
 
   val wbExuParams = params.allExuParams.filter(_.exceptionOut.nonEmpty)
+
+  def getFlushValid(exceptionInfo: RobExceptionInfo, flush: Valid[Redirect]): Bool = {
+    val isVls =  exceptionInfo.isVls
+    flush.valid && (!isVls || exceptionInfo.robIdx.needFlush(exceptionInfo.vuopIdx, isVls, flush))
+  }
 
   def getOldest(valid: Seq[Bool], bits: Seq[RobExceptionInfo]): RobExceptionInfo = {
     def getOldest_recursion(valid: Seq[Bool], bits: Seq[RobExceptionInfo]): (Seq[Bool], Seq[RobExceptionInfo]) = {
@@ -314,7 +319,11 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
           res(i).valid := valid(i)
           res(i).bits := bits(i)
         }
-        val oldest = Mux(!valid(1) || valid(0) && isAfter(bits(1).robIdx, bits(0).robIdx), res(0), res(1))
+//        val oldest = Mux(!valid(1) || valid(0) && isAfter(bits(1).robIdx, bits(0).robIdx), res(0), res(1))
+        val oldest = Mux(
+          !valid(1) || valid(0) && (isAfter(bits(1).robIdx, bits(0).robIdx) || (bits(1).robIdx === bits(0).robIdx) && bits(1).vuopIdx > bits(0).vuopIdx),
+          res(0),
+          res(1))
         (Seq(oldest.valid), Seq(oldest.bits))
       } else {
         val left = getOldest_recursion(valid.take(valid.length / 2), bits.take(valid.length / 2))
@@ -331,7 +340,7 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
 
   // orR the exceptionVec
   val lastCycleFlush = RegNext(io.flush)
-  val in_enq_valid = VecInit(io.enq.map(e => e.valid && e.bits.has_exception && !lastCycleFlush))
+  val in_enq_valid = VecInit(io.enq.map(e => e.valid && e.bits.has_exception && !getFlushValid(e.bits, lastCycleFlush)))
 
   // s0: compare wb in 6 groups
   val csr_wb = io.wb.zip(wbExuParams).filter(_._2.fuConfigs.filter(t => t.isCsr).nonEmpty).map(_._1)
@@ -341,9 +350,9 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
   val vls_wb    = io.wb.zip(wbExuParams).filter(_._2.fuConfigs.exists(x => FuType.FuTypeOrR(x.fuType, FuType.vecMem))).map(_._1)
 
   val writebacks = Seq(csr_wb, load_wb, store_wb, varith_wb, vls_wb)
-  val in_wb_valids = writebacks.map(_.map(w => w.valid && w.bits.has_exception && !lastCycleFlush))
+  val in_wb_valids = writebacks.map(_.map(w => w.valid && w.bits.has_exception && !getFlushValid(w.bits, lastCycleFlush)))
   val wb_valid = in_wb_valids.zip(writebacks).map { case (valid, wb) =>
-    valid.zip(wb.map(_.bits)).map { case (v, bits) => v && !(bits.robIdx.needFlush(io.redirect) || io.flush) }.reduce(_ || _)
+    valid.zip(wb.map(_.bits)).map { case (v, bits) => v && !(bits.robIdx.needFlush(bits.vuopIdx, bits.isVls, io.redirect) || getFlushValid(bits, io.flush)) }.reduce(_ || _)
   }
   val wb_bits = in_wb_valids.zip(writebacks).map { case (valid, wb) => getOldest(valid, wb.map(_.bits))}
 
@@ -351,20 +360,20 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
   val s0_out_bits = wb_bits.zip(wb_valid).map{ case(b, v) => RegEnable(b, v)}
 
   // s1: compare last six and current flush
-  val s1_valid = VecInit(s0_out_valid.zip(s0_out_bits).map{ case (v, b) => v && !(b.robIdx.needFlush(io.redirect) || io.flush) })
+  val s1_valid = VecInit(s0_out_valid.zip(s0_out_bits).map{ case (v, b) => v && !(b.robIdx.needFlush(b.vuopIdx, b.isVls, io.redirect) || getFlushValid(b, io.flush)) })
   val s1_out_bits = RegEnable(getOldest(s0_out_valid, s0_out_bits), s1_valid.asUInt.orR)
   val s1_out_valid = RegNext(s1_valid.asUInt.orR)
 
-  val enq_valid = RegNext(in_enq_valid.asUInt.orR && !io.redirect.valid && !io.flush)
-  val enq_bits = RegEnable(ParallelPriorityMux(in_enq_valid, io.enq.map(_.bits)), in_enq_valid.asUInt.orR && !io.redirect.valid && !io.flush)
+  val enq_valid = RegNext(in_enq_valid.asUInt.orR && !io.redirect.valid && !io.flush.valid)
+  val enq_bits = RegEnable(ParallelPriorityMux(in_enq_valid, io.enq.map(_.bits)), in_enq_valid.asUInt.orR && !io.redirect.valid && !io.flush.valid)
 
   // s2: compare the input exception with the current one
   // priorities:
   // (1) system reset
   // (2) current is valid: flush, remain, merge, update
   // (3) current is not valid: s1 or enq
-  val current_flush = current.robIdx.needFlush(io.redirect) || io.flush
-  val s1_flush = s1_out_bits.robIdx.needFlush(io.redirect) || io.flush
+  val current_flush = current.robIdx.needFlush(current.vuopIdx, current.isVls, io.redirect) || getFlushValid(current, io.flush)
+  val s1_flush = s1_out_bits.robIdx.needFlush(s1_out_bits.vuopIdx, s1_out_bits.isVls, io.redirect) || getFlushValid(s1_out_bits, io.flush)
   when (currentValid) {
     when (current_flush) {
       currentValid := Mux(s1_flush, false.B, s1_out_valid)
@@ -378,12 +387,13 @@ class ExceptionGen(params: BackendParams)(implicit p: Parameters) extends XSModu
         current.replayInst := s1_out_bits.replayInst || current.replayInst
         current.singleStep := s1_out_bits.singleStep || current.singleStep
         current.trigger := (s1_out_bits.trigger.asUInt | current.trigger.asUInt).asTypeOf(new TriggerCf)
+        current.vuopIdx := Mux(s1_out_bits.isVls && current.vuopIdx > s1_out_bits.vuopIdx, s1_out_bits.vuopIdx, current.vuopIdx)
       }
     }
   }.elsewhen (s1_out_valid && !s1_flush) {
     currentValid := true.B
     current := s1_out_bits
-  }.elsewhen (enq_valid && !(io.redirect.valid || io.flush)) {
+  }.elsewhen (enq_valid && !(io.redirect.valid || io.flush.valid)) {
     currentValid := true.B
     current := enq_bits
   }
@@ -849,8 +859,9 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   // io.flushOut will trigger redirect at the next cycle.
   // Block any redirect or commit at the next cycle.
   val lastCycleFlush = RegNext(io.flushOut.valid)
-
-  io.flushOut.valid := (state === s_idle) && valid(deqPtr.value) && (intrEnable || exceptionEnable || isFlushPipe) && !lastCycleFlush
+  val lastCycleFlushBits = RegNext(io.flushOut.bits)
+  val vlsFlush = (lastCycleFlushBits.robIdx === Mux(needModifyFtqIdxOffset, firstVInstrRobIdx, deqPtr)) && exceptionDataRead.bits.isVls
+  io.flushOut.valid := (state === s_idle) && valid(deqPtr.value) && (intrEnable || exceptionEnable || isFlushPipe) && (!lastCycleFlush || vlsFlush)
   io.flushOut.bits := DontCare
   io.flushOut.bits.isRVC := deqDispatchData.isRVC
   io.flushOut.bits.robIdx := Mux(needModifyFtqIdxOffset, firstVInstrRobIdx, deqPtr)
@@ -1409,7 +1420,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   dispatchData.io.raddr := commitReadAddr_next
 
   exceptionGen.io.redirect <> io.redirect
-  exceptionGen.io.flush := io.flushOut.valid
+  exceptionGen.io.flush := io.flushOut
 
   val canEnqueueEG = VecInit(io.enq.req.map(req => req.valid && io.enq.canAccept))
   for (i <- 0 until RenameWidth) {
@@ -1428,6 +1439,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     exceptionGen.io.enq(i).bits.vstartEn := false.B //DontCare
     exceptionGen.io.enq(i).bits.vstart := 0.U //DontCare
     exceptionGen.io.enq(i).bits.vuopIdx := 0.U
+    exceptionGen.io.enq(i).bits.isVls := 0.U
   }
 
   println(s"ExceptionGen:")
@@ -1453,9 +1465,14 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     exc_wb.bits.vstart := 0.U //wb.bits.vstart.getOrElse(0.U)
     val vuopIdx = wb.bits.vls match {
       case Some(x) => x.vpu.vuopIdx
-      case None => 0.U
+      case None => 0.U(UopIdx.width.W)
+    }
+    val isVls = wb.bits.vls match {
+      case Some(x) => true.B
+      case None => false.B
     }
     exc_wb.bits.vuopIdx := vuopIdx
+    exc_wb.bits.isVls   := isVls
 //    println(s"  [$i] ${configs.map(_.name)}: exception ${exceptionCases(i)}, " +
 //      s"flushPipe ${configs.exists(_.flushPipe)}, " +
 //      s"replayInst ${configs.exists(_.replayInst)}")

@@ -118,7 +118,8 @@ class IssueQueueImp(override val wrapper: IssueQueue)(implicit p: Parameters, va
 
   private def flushFunc(exuInput: ExuInput, flush: WakeupQueueFlush, stage: Int): Bool = {
     val vuopIdx = if (exuInput.vpu.isDefined) exuInput.vpu.get.vuopIdx else 0.U(UopIdx.width.W)
-    val redirectFlush = exuInput.robIdx.needFlush(vuopIdx, exuInput.fuType, flush.redirect)
+    val isVls = FuType.isVls(exuInput.fuType)
+    val redirectFlush = exuInput.robIdx.needFlush(vuopIdx, isVls, flush.redirect)
     val loadDependencyFlush = LoadShouldCancel(exuInput.loadDependency, flush.ldCancel)
     val ogFailFlush = stage match {
       case 1 => flush.og0Fail
